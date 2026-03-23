@@ -20,6 +20,13 @@ Console.WriteLine();
 
 Console.WriteLine("Setup complete. Ready to begin transfer...");
 
+const int chunkSize = 1024 * 1024;
+
+CopyFileInChunks(sourcePath, destinationPath, chunkSize);
+
+Console.WriteLine();
+Console.WriteLine("Transfer complete");
+
 string GetValidSourcePath()
 {
 	while (true)
@@ -70,5 +77,27 @@ string GetValidDestinationDirectory()
 		{
 			Console.WriteLine($"An error occurred: {ex.Message}");
 		}
+	}
+}
+
+void CopyFileInChunks(string sourceFilePath, string destinationFilePath, int chunkSize)
+{
+	using FileStream sourceStream = new FileStream(sourceFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+	using FileStream destinationStream = new FileStream(destinationFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
+
+	byte[] buffer = new byte[chunkSize];
+	long position = 0;
+	int blockNumber = 1;
+	int bytesRead;
+
+	while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
+	{
+		destinationStream.Write(buffer, 0, bytesRead);
+
+		Console.WriteLine($"{blockNumber}) position = {position}, bytes = {bytesRead}");
+
+		position += bytesRead;
+		blockNumber++;
 	}
 }

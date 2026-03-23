@@ -29,8 +29,25 @@ const int maxRetries = 3; //retries if source and destination hashes do not matc
 CopyFileInChunks(sourcePath, destinationPath, chunkSize, maxRetries);
 
 Console.WriteLine();
-Console.WriteLine("Transfer complete");
+Console.WriteLine("Chunk transfer complete");
 
+Console.WriteLine();
+Console.WriteLine("Calculating final file checksums...");
+
+string sourceFileHash = GenerateFileSha256(sourcePath);
+string destinationFileHash = GenerateFileSha256(destinationPath);
+
+Console.WriteLine($"Source SHA-256: {sourceFileHash}");
+Console.WriteLine($"Destination SHA-256: {destinationFileHash}");
+
+if (sourceFileHash == destinationFileHash)
+{
+	Console.WriteLine("Final file verification successful");
+}
+else
+{
+	Console.WriteLine("Final file verification failed");
+}
 string GetValidSourcePath()
 {
 	while (true)
@@ -95,19 +112,22 @@ void CopyFileInChunks(string sourceFilePath, string destinationFilePath, int chu
 	long position = 0;
 	int blockNumber = 1;
 	int bytesRead;
+	long totalChunks = (sourceStream.Length + chunkSize - 1) / chunkSize;
 
 	while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
 	{
-		string sourceHash = GenerateHash(buffer, bytesRead);
+		Console.WriteLine($"Copying chunk {blockNumber} of {totalChunks}...");
+
+		string sourceHash = GenerateMD5Hash(buffer, bytesRead);
 		bool success = false;
 
 		for (int attempt = 1; attempt <= maxRetries; attempt++)
 		{
 			destinationStream.Position = position;
 			destinationStream.Write(buffer, 0, bytesRead);
-			destinationStream.Flush(); // make sure data is written before verifying the chunk
+			destinationStream.Flush(); //make sure data is written before verifying the chunk
 
-			destinationStream.Position = position; // reset position so we read back the same chunk we just wrote
+			destinationStream.Position = position; //reset position so we read back the same chunk we just wrote
 
 
 			int readBack = destinationStream.Read(verifyBuffer, 0, bytesRead);
@@ -118,7 +138,7 @@ void CopyFileInChunks(string sourceFilePath, string destinationFilePath, int chu
 				continue;
 			}
 
-			string destinationHash = GenerateHash(verifyBuffer, readBack);
+			string destinationHash = GenerateMD5Hash(verifyBuffer, readBack);
 
 			if (destinationHash == sourceHash)
 			{
@@ -140,9 +160,18 @@ void CopyFileInChunks(string sourceFilePath, string destinationFilePath, int chu
 	}
 }
 
-string GenerateHash(byte[] buffer, int bytesToHash)
+string GenerateMD5Hash(byte[] buffer, int bytesToHash)
 {
 	using MD5 md5 = MD5.Create();
 	byte[] hashBytes = md5.ComputeHash(buffer, 0, bytesToHash);
+	return Convert.ToHexString(hashBytes);
+}
+
+string GenerateFileSha256(string filePath)
+{
+	using FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+	using SHA256 sha256 = SHA256.Create();
+
+	byte[] hashBytes = sha256.ComputeHash(fileStream);
 	return Convert.ToHexString(hashBytes);
 }

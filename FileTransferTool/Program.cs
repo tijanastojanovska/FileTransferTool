@@ -1,4 +1,6 @@
-﻿Console.WriteLine("===== File Transfer Tool =====");
+﻿using System.Security.Cryptography;
+
+Console.WriteLine("===== File Transfer Tool =====");
 Console.WriteLine();
 
 string sourcePath = GetValidSourcePath();
@@ -20,9 +22,11 @@ Console.WriteLine();
 
 Console.WriteLine("Setup complete. Ready to begin transfer...");
 
+//1MB is small enough for a chunk to transfer, but also large enough so that I don't have too many chunks when working with larger files
 const int chunkSize = 1024 * 1024;
+const int maxRetries = 3; //retries if source and destination hashes do not match
 
-CopyFileInChunks(sourcePath, destinationPath, chunkSize);
+CopyFileInChunks(sourcePath, destinationPath, chunkSize, maxRetries);
 
 Console.WriteLine();
 Console.WriteLine("Transfer complete");
@@ -80,24 +84,65 @@ string GetValidDestinationDirectory()
 	}
 }
 
-void CopyFileInChunks(string sourceFilePath, string destinationFilePath, int chunkSize)
+void CopyFileInChunks(string sourceFilePath, string destinationFilePath, int chunkSize, int maxRetries)
 {
 	using FileStream sourceStream = new FileStream(sourceFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-
-	using FileStream destinationStream = new FileStream(destinationFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
+	using FileStream destinationStream = new FileStream(destinationFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
 
 	byte[] buffer = new byte[chunkSize];
+	byte[] verifyBuffer = new byte[chunkSize];
+
 	long position = 0;
 	int blockNumber = 1;
 	int bytesRead;
 
 	while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
 	{
-		destinationStream.Write(buffer, 0, bytesRead);
+		string sourceHash = GenerateHash(buffer, bytesRead);
+		bool success = false;
 
-		Console.WriteLine($"{blockNumber}) position = {position}, bytes = {bytesRead}");
+		for (int attempt = 1; attempt <= maxRetries; attempt++)
+		{
+			destinationStream.Position = position;
+			destinationStream.Write(buffer, 0, bytesRead);
+			destinationStream.Flush(); // make sure data is written before verifying the chunk
+
+			destinationStream.Position = position; // reset position so we read back the same chunk we just wrote
+
+
+			int readBack = destinationStream.Read(verifyBuffer, 0, bytesRead);
+
+			if (readBack != bytesRead)
+			{
+				Console.WriteLine($"Block {blockNumber}: couldn't read back properly (attempt {attempt})");
+				continue;
+			}
+
+			string destinationHash = GenerateHash(verifyBuffer, readBack);
+
+			if (destinationHash == sourceHash)
+			{
+				Console.WriteLine($"{blockNumber}) position = {position}, hash = {sourceHash}");
+				success = true;
+				break;
+			}
+
+			Console.WriteLine($"Block {blockNumber}: hash mismatch (attempt {attempt})");
+		}
+
+		if (!success)
+		{
+			throw new IOException($"Failed to copy block at position {position}");
+		}
 
 		position += bytesRead;
 		blockNumber++;
 	}
+}
+
+string GenerateHash(byte[] buffer, int bytesToHash)
+{
+	using MD5 md5 = MD5.Create();
+	byte[] hashBytes = md5.ComputeHash(buffer, 0, bytesToHash);
+	return Convert.ToHexString(hashBytes);
 }

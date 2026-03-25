@@ -8,13 +8,10 @@ namespace FileTransferTool.Services
 	/// </summary>
 	public class FileTransferService
 	{
-		public void CopyFileInChunks(string sourceFilePath, string destinationFilePath, FileTransferConfig config)
+		public async Task CopyFileInChunksAsync(string sourceFilePath, string destinationFilePath, FileTransferConfig config)
 		{
 			using FileStream sourceStream = new FileStream(sourceFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-			using FileStream destinationStream = new FileStream(destinationFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
-
-			byte[] buffer = new byte[config.ChunkSize];
-			byte[] verifyBuffer = new byte[config.ChunkSize];
+			using (File.Create(destinationFilePath)) { } // Create the destination file that later parallel chunks can open and write into
 
 			long position = 0;
 			int blockNumber = 1;
@@ -23,38 +20,77 @@ namespace FileTransferTool.Services
 			// Calculate total number of chunks needed(rounding up for partial last chunk)
 			long totalChunks = (sourceStream.Length + config.ChunkSize - 1) / config.ChunkSize;
 
-			while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
+			const int batchSize = 8;
+
+			while (true)
 			{
-				Console.WriteLine($"Copying chunk {blockNumber} of {totalChunks}...");
+				List<TransferChunk> batch = new List<TransferChunk>();
 
-				TransferChunk chunk = new TransferChunk()
+				for (int i = 0; i < batchSize; i++)
 				{
-					Buffer = buffer,
-					VerifyBuffer = verifyBuffer,
-					BytesRead = bytesRead,
-					Position = position,
-					BlockNumber = blockNumber
-				};
+					byte[] buffer = new byte[config.ChunkSize];
+					bytesRead = sourceStream.Read(buffer, 0, buffer.Length);
 
-				ProcessChunk(destinationStream, chunk, config.MaxRetries);
+					if (bytesRead == 0)
+					{
+						break;
+					}
 
-				position += bytesRead;
-				blockNumber++;
+					byte[] actualBuffer;
+
+					if (bytesRead == config.ChunkSize)
+					{
+						actualBuffer = buffer; // BytesRead is the same as chunkSize so we don't have empty unused part of the chunk
+					}
+					else
+					{
+						actualBuffer = new byte[bytesRead];
+						Array.Copy(buffer, actualBuffer, bytesRead); // If the chunk is smaller create new buffer with actual read size (usually for last chunk)
+					}
+
+					TransferChunk chunk = new TransferChunk
+					{
+						Buffer = actualBuffer,
+						VerifyBuffer = new byte[bytesRead],
+						BytesRead = bytesRead,
+						Position = position,
+						BlockNumber = blockNumber
+					};
+
+					Console.WriteLine($"Preparing chunk {blockNumber} of {totalChunks}...");
+					batch.Add(chunk);
+
+					position += bytesRead;
+					blockNumber++;
+				}
+
+				if (batch.Count == 0)
+				{
+					break;
+				}
+
+				await Parallel.ForEachAsync(batch, async (chunk, _) =>
+				{
+					using FileStream destinationStream = new FileStream(destinationFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite, chunk.BytesRead, FileOptions.Asynchronous);
+
+					string hash = await ProcessChunkAsync(destinationStream, chunk, config.MaxRetries);
+					Console.WriteLine($"{chunk.BlockNumber}) position = {chunk.Position}, hash = {hash}");
+				});
 			}
 		}
 
-		private void ProcessChunk(FileStream destinationStream, TransferChunk chunk, int maxRetries)
+		private async Task<string> ProcessChunkAsync(FileStream destinationStream, TransferChunk chunk, int maxRetries)
 		{
 			string sourceHash = GenerateMD5Hash(chunk.Buffer, chunk.BytesRead);
 
 			for (int attempt = 1; attempt <= maxRetries; attempt++)
 			{
 				destinationStream.Position = chunk.Position;
-				destinationStream.Write(chunk.Buffer, 0, chunk.BytesRead);
-				destinationStream.Flush(); // Make sure data is written before verifying the chunk
+				await destinationStream.WriteAsync(chunk.Buffer, 0, chunk.BytesRead);
+				await destinationStream.FlushAsync(); // Make sure data is written before verifying the chunk
 
 				destinationStream.Position = chunk.Position; // Reset position so we read back the same chunk we just wrote
-				int readBack = destinationStream.Read(chunk.VerifyBuffer, 0, chunk.BytesRead);
+				int readBack = await destinationStream.ReadAsync(chunk.VerifyBuffer, 0, chunk.BytesRead);
 
 				if (readBack != chunk.BytesRead)
 				{
@@ -66,14 +102,13 @@ namespace FileTransferTool.Services
 
 				if (destinationHash == sourceHash)
 				{
-					Console.WriteLine($"{chunk.BlockNumber}) position = {chunk.Position}, hash = {sourceHash}");
-					return;
+					return destinationHash;
 				}
 
 				Console.WriteLine($"Block {chunk.BlockNumber}: hash mismatch (attempt {attempt})");
 			}
 
-			throw new IOException($"Failed to copy block {chunk.BlockNumber} at position {chunk.Position} after {maxRetries}");
+			throw new IOException($"Failed to copy block {chunk.BlockNumber} at position {chunk.Position} after {maxRetries} attempts");
 		}
 
 		private string GenerateMD5Hash(byte[] buffer, int bytesToHash)

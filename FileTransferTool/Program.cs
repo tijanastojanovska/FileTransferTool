@@ -24,9 +24,9 @@ Console.WriteLine();
 Console.WriteLine("Setup complete. Ready to begin transfer...");
 
 FileTransferConfig  config = new FileTransferConfig();
-
 FileTransferService fileTransferService = new FileTransferService();
-fileTransferService.CopyFileInChunks(sourcePath, destinationPath, config);
+
+await fileTransferService.CopyFileInChunksAsync(sourcePath, destinationPath, config);
 
 Console.WriteLine();
 Console.WriteLine("Chunk transfer complete");
